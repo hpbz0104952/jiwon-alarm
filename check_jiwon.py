@@ -1,7 +1,8 @@
 """
-지원사업 알림 자동화 스크립트 v2
-- 경기/전국 공고만 필터링
-- 마감 3일 이내 공고는 별도 강조
+지원사업 알림 자동화 스크립트 v3 (정밀 조정판)
+- 좋은술양조장: 소상공인, 탁주/약주/증류주, 평택, 시설/수출/박람회/인증
+- 김담희창업: 예비창업, 청년농업인, 여성기업, 1인창조기업, 6차산업, 비건/K푸드
+- 경기/전국 대상만, 마감 3일 이내 별도 강조, 두 사업 섹션 구분 표시
 """
 import os
 import json
@@ -18,33 +19,83 @@ from pathlib import Path
 
 TO_EMAIL = "jsul8929@gmail.com"
 
-KEYWORDS = [
-    "디자인", "수출", "패키지", "박람회", "유통", "플랫폼",
-    "마케팅", "컨설팅", "인증", "장비", "스마트",
-    "농촌융복합", "농촌자원복합", "푸드", "온라인", "오프라인",
-    "디자인개발", "기술개발", "연구개발", "시제품",
-    "양조장", "전통주", "주류", "창업",
+# === 🔥 핵심 키워드 (1개라도 매칭되면 통과) ===
+# 두 사업과 직접 연관된 키워드
+CORE_KEYWORDS = {
+    "yangjojang": [  # 좋은술양조장 핵심
+        "양조장", "전통주", "막걸리", "탁주", "약주", "증류주",
+        "주류", "주조", "지역특산주", "민속주",
+    ],
+    "kimdamhee": [  # 김담희창업 핵심
+        "예비창업", "청년창업", "청년농업", "청년농업인", "후계농", "영농창업",
+        "여성기업", "여성창업", "1인창조기업", "1인기업",
+        "6차산업", "농촌융복합", "농촌자원복합", "농촌체험",
+        "농산물가공", "농식품가공", "업사이클", "푸드테크",
+        "K-푸드", "K푸드", "K-디저트",
+    ],
+}
+
+# === ⚖️ 조합 키워드 (2개 이상 동시 매칭되어야 통과) ===
+# 단독으론 너무 광범위해서 노이즈 많음
+COMBO_KEYWORDS = [
+    "디자인", "패키지", "브랜드", "브랜딩",
+    "마케팅", "온라인", "오프라인", "유통", "판로",
+    "수출", "해외", "박람회", "전시회", "수출상담",
+    "시설", "장비", "스마트공장", "스마트팜",
+    "인증", "HACCP", "할랄", "코셔", "FDA", "GMP",
+    "시제품", "제품개발", "신제품",
+    "컨설팅", "교육", "멘토링",
+    "임차료", "사무공간", "공간지원",
+    "투자", "투자유치", "IR",
+    "체험", "관광", "농촌관광", "팜스테이",
+    "비건", "베이킹", "디저트",
+    "소상공인", "중소기업", "스타트업", "창업기업",
 ]
 
+# === 🏛️ 우선순위 기관 (기관명만으로도 통과) ===
 PRIORITY_ORGS = [
-    "기업마당",
-    "경기도경제과학진흥원", "GBSA",
+    "한국디자인진흥원",
+    "한국쌀가공식품협회",
+    "한국전통주연구소",
+    "한국농수산식품유통공사", "aT",
+    "농림축산식품부",
+    "여성기업종합지원센터",
+    "한국여성경제인협회",
+    "창업진흥원",
+    "K-Startup",
+    "농업기술실용화재단",
+    "농촌진흥청",
     "평택산업진흥원",
-    "경기기업비서", "경기도",
+    "경기도경제과학진흥원", "GBSA",
+    "경기도일자리재단",
+    "경기농수산진흥원",
+    "경기도주식회사",
+    "한국기업가정신재단",
+    "중소상공인희망재단",
+    "소상공인시장진흥공단",
+    "해외규격인증획득지원센터",
+    "KOTRA", "코트라",
+]
+
+# === 🚫 제외 키워드 (이게 들어가면 거의 무조건 무관) ===
+EXCLUDE_KEYWORDS = [
+    "대기업", "중견기업",  # 우리는 소상공인/예비창업
+    "IT개발자", "소프트웨어개발자", "AI개발자", "프로그래머",
+    "반도체", "디스플레이", "조선", "해운", "항공",
+    "광역버스", "택시", "물류센터",
+    "벤처투자조합", "사모펀드",
+    "이공계특성화", "공학교육",
+    "장애인기업", "사회적기업",  # 해당 안 되면 제외 (해당되시면 빼주세요)
+    "보훈", "다문화",
 ]
 
 # === 지역 필터 ===
-# 허용 지역: 경기 + 전국 대상
-# 다른 지역(서울, 부산, 강원 등)은 자동 제외
-ALLOWED_REGIONS = ["경기", "전국", "수도권"]
-
-# 명시적으로 제외할 지역 (다른 시/도 단독 공고는 제외)
+ALLOWED_REGIONS = ["경기", "전국", "수도권", "평택"]
 EXCLUDED_REGIONS = [
     "서울", "부산", "대구", "인천", "광주", "대전", "울산", "세종",
     "강원", "충북", "충남", "전북", "전남", "경북", "경남", "제주",
 ]
 
-# 마감 임박 기준 (일)
 DEADLINE_WARNING_DAYS = 3
 
 BIZINFO_API_KEY = os.environ.get("BIZINFO_API_KEY", "")
@@ -73,7 +124,7 @@ def fetch_bizinfo():
     params = {
         "crtfcKey": BIZINFO_API_KEY,
         "dataType": "json",
-        "searchCnt": "100",
+        "searchCnt": "200",  # 더 많이 가져와서 정밀 필터링
         "hashtags": "",
     }
     try:
@@ -88,8 +139,6 @@ def fetch_bizinfo():
 
 
 def is_region_allowed(item):
-    """경기 또는 전국 대상 공고만 허용"""
-    # API에서 지역 정보가 들어오는 필드들 모두 체크
     region_text = " ".join([
         str(item.get("areaNm", "")),
         str(item.get("trgetNm", "")),
@@ -98,31 +147,22 @@ def is_region_allowed(item):
         str(item.get("pblancNm", "")),
     ])
 
-    # 허용 지역 키워드가 있으면 통과
     for region in ALLOWED_REGIONS:
         if region in region_text:
             return True
 
-    # 다른 지역명이 명시되어 있으면 제외
     for region in EXCLUDED_REGIONS:
-        # "서울특별시", "부산시", "강원도" 같은 패턴
         if region in region_text:
             return False
 
-    # 지역 정보가 명확하지 않으면 일단 통과 (전국 대상으로 추정)
-    return True
+    return True  # 지역 정보 없으면 전국으로 간주
 
 
 def parse_deadline(reqstBeginEndDe):
-    """접수기간 문자열에서 마감일 추출"""
     if not reqstBeginEndDe or reqstBeginEndDe == "-":
         return None
-
-    # 형식 예: "2026-05-01 ~ 2026-05-15" 또는 "20260501 ~ 20260515"
-    # 끝 날짜 추출
     matches = re.findall(r"(\d{4})[.\-/]?(\d{1,2})[.\-/]?(\d{1,2})", reqstBeginEndDe)
     if len(matches) >= 2:
-        # 마감일은 두 번째 날짜
         y, m, d = matches[1]
         try:
             return date(int(y), int(m), int(d))
@@ -138,7 +178,6 @@ def parse_deadline(reqstBeginEndDe):
 
 
 def get_days_until_deadline(item):
-    """마감까지 남은 일수 계산 (음수면 이미 마감)"""
     deadline = parse_deadline(item.get("reqstBeginEndDe", ""))
     if deadline is None:
         return None
@@ -146,28 +185,61 @@ def get_days_until_deadline(item):
     return (deadline - today).days
 
 
-def is_relevant(item):
-    """공고가 관심사와 매칭되는지 확인"""
+def has_excluded(text):
+    """제외 키워드가 있으면 True"""
+    for kw in EXCLUDE_KEYWORDS:
+        if kw in text:
+            return True, kw
+    return False, ""
+
+
+def classify_business(item):
+    """
+    공고가 어느 사업과 관련 있는지 분류
+    Returns: (relevant: bool, reason: str, business: str)
+    business: "yangjojang" / "kimdamhee" / "both" / ""
+    """
     title = (item.get("pblancNm") or "").strip()
     content = (item.get("bsnsSumryCn") or "").strip()
     org = (item.get("excInsttNm") or item.get("jrsdInsttNm") or "").strip()
     text = f"{title} {content} {org}"
 
-    # 1) 우선순위 기관이면 무조건 통과
+    # 제외 키워드 먼저 체크
+    excluded, exc_kw = has_excluded(text)
+    if excluded:
+        return False, f"제외:{exc_kw}", ""
+
+    # 우선순위 기관이면 통과
     for priority_org in PRIORITY_ORGS:
         if priority_org in org:
-            return True, f"기관: {priority_org}"
+            # 기관에 따라 어느 사업으로 분류할지 추정
+            if any(k in priority_org for k in ["여성", "창업", "기업가정신"]):
+                return True, f"기관: {priority_org}", "kimdamhee"
+            elif any(k in priority_org for k in ["농", "쌀", "전통주", "디자인", "수출", "KOTRA", "코트라"]):
+                return True, f"기관: {priority_org}", "both"
+            else:
+                return True, f"기관: {priority_org}", "both"
 
-    # 2) 키워드 매칭
-    matched = [kw for kw in KEYWORDS if kw in text]
-    if matched:
-        return True, f"키워드: {', '.join(matched[:3])}"
+    # 핵심 키워드 매칭
+    yangjojang_matched = [kw for kw in CORE_KEYWORDS["yangjojang"] if kw in text]
+    kimdamhee_matched = [kw for kw in CORE_KEYWORDS["kimdamhee"] if kw in text]
 
-    return False, ""
+    if yangjojang_matched and kimdamhee_matched:
+        return True, f"핵심: {yangjojang_matched[0]}, {kimdamhee_matched[0]}", "both"
+    elif yangjojang_matched:
+        return True, f"양조장 핵심: {', '.join(yangjojang_matched[:2])}", "yangjojang"
+    elif kimdamhee_matched:
+        return True, f"창업 핵심: {', '.join(kimdamhee_matched[:2])}", "kimdamhee"
+
+    # 조합 키워드 (2개 이상 매칭되어야 통과)
+    combo_matched = [kw for kw in COMBO_KEYWORDS if kw in text]
+    if len(combo_matched) >= 2:
+        return True, f"조합: {', '.join(combo_matched[:3])}", "both"
+
+    return False, "", ""
 
 
 def render_card(item, reason, days_left, idx, urgent=False):
-    """공고 한 건의 HTML 카드 생성"""
     title = item.get("pblancNm", "(제목 없음)")
     org = item.get("excInsttNm") or item.get("jrsdInsttNm") or "-"
     reqstBeginEndDe = item.get("reqstBeginEndDe", "-")
@@ -179,7 +251,6 @@ def render_card(item, reason, days_left, idx, urgent=False):
     if len(summary) > 200:
         summary = summary[:200] + "..."
 
-    # 마감 정보 표시
     if days_left is None:
         deadline_html = f"<b>접수기간:</b> {reqstBeginEndDe}"
     elif days_left < 0:
@@ -189,7 +260,6 @@ def render_card(item, reason, days_left, idx, urgent=False):
     else:
         deadline_html = f"<b>접수기간:</b> {reqstBeginEndDe} <span style='color:#5cb85c;'>(D-{days_left})</span>"
 
-    # 카드 색상 (긴급은 빨강 테두리)
     if urgent:
         border_color = "#d9534f"
         bg_color = "#fff5f5"
@@ -199,7 +269,7 @@ def render_card(item, reason, days_left, idx, urgent=False):
 
     return f"""
     <div style='border:2px solid {border_color}; border-radius:8px; padding:15px; margin:12px 0; background:{bg_color};'>
-        <div style='font-size:12px; color:#888;'>#{idx} · 매칭사유: {reason}</div>
+        <div style='font-size:12px; color:#888;'>#{idx} · {reason}</div>
         <h3 style='margin:8px 0;'>
             <a href='{pblancUrl}' style='color:#2c5aa0; text-decoration:none;'>{title}</a>
         </h3>
@@ -216,55 +286,71 @@ def render_card(item, reason, days_left, idx, urgent=False):
     """
 
 
-def send_email(urgent_items, normal_items):
-    """신규 공고를 이메일로 발송 — 마감임박과 일반을 분리해서 표시"""
-    total_count = len(urgent_items) + len(normal_items)
-    if total_count == 0:
+def render_section_header(title, count, color="#2c5aa0"):
+    return f"""
+    <div style='background:{color}; color:white; padding:12px; border-radius:6px; margin:20px 0 10px 0;'>
+        <h3 style='margin:0;'>{title} ({count}건)</h3>
+    </div>
+    """
+
+
+def send_email(urgent_items, yangjojang_items, kimdamhee_items, both_items):
+    total = len(urgent_items) + len(yangjojang_items) + len(kimdamhee_items) + len(both_items)
+    if total == 0:
         print("신규 매칭 공고 없음 — 이메일 발송 건너뜀")
         return
 
     today = datetime.now().strftime("%Y년 %m월 %d일")
 
-    # 제목에 마감임박 건수 강조
     if urgent_items:
-        subject = f"[지원사업 알림] {today} ⏰ 마감임박 {len(urgent_items)}건 + 신규 {len(normal_items)}건"
+        subject = f"[지원사업 알림] {today} ⏰ 마감임박 {len(urgent_items)}건 + 신규 {total - len(urgent_items)}건"
     else:
-        subject = f"[지원사업 알림] {today} 신규 공고 {total_count}건"
+        subject = f"[지원사업 알림] {today} 신규 공고 {total}건"
 
     html_parts = [
         "<html><body style='font-family: 맑은 고딕, Arial, sans-serif; max-width: 700px;'>",
-        f"<h2 style='color:#2c5aa0;'>📢 오늘의 지원사업 공고</h2>",
-        f"<p style='color:#666;'>경기/전국 대상 + 관심 키워드 매칭 공고입니다.</p>",
+        f"<h2 style='color:#2c5aa0;'>📢 오늘의 지원사업 공고 ({total}건)</h2>",
+        f"<p style='color:#666;'>경기/전국 대상 · 좋은술양조장 + 김담희창업 맞춤 매칭</p>",
     ]
 
     idx = 1
 
-    # ⏰ 마감 임박 섹션 (먼저 표시)
+    # ⏰ 마감 임박 (최우선)
     if urgent_items:
-        html_parts.append(f"""
-        <div style='background:#d9534f; color:white; padding:12px; border-radius:6px; margin:20px 0 10px 0;'>
-            <h3 style='margin:0;'>⏰ 마감 임박! ({len(urgent_items)}건) — 3일 이내 마감</h3>
-        </div>
-        """)
-        for item, reason, days_left in urgent_items:
+        html_parts.append(render_section_header(
+            f"⏰ 마감 임박! 3일 이내", len(urgent_items), "#d9534f"))
+        for item, reason, days_left, _ in urgent_items:
             html_parts.append(render_card(item, reason, days_left, idx, urgent=True))
             idx += 1
 
-    # 📋 일반 신규 공고 섹션
-    if normal_items:
-        html_parts.append(f"""
-        <div style='background:#2c5aa0; color:white; padding:12px; border-radius:6px; margin:20px 0 10px 0;'>
-            <h3 style='margin:0;'>📋 신규 공고 ({len(normal_items)}건)</h3>
-        </div>
-        """)
-        for item, reason, days_left in normal_items:
-            html_parts.append(render_card(item, reason, days_left, idx, urgent=False))
+    # 🍶 좋은술양조장 관련
+    if yangjojang_items:
+        html_parts.append(render_section_header(
+            f"🍶 좋은술양조장 관련", len(yangjojang_items), "#7a3d2e"))
+        for item, reason, days_left, _ in yangjojang_items:
+            html_parts.append(render_card(item, reason, days_left, idx))
+            idx += 1
+
+    # 🌾 김담희창업 관련
+    if kimdamhee_items:
+        html_parts.append(render_section_header(
+            f"🌾 김담희창업 관련 (예비창업/청년농업)", len(kimdamhee_items), "#5cb85c"))
+        for item, reason, days_left, _ in kimdamhee_items:
+            html_parts.append(render_card(item, reason, days_left, idx))
+            idx += 1
+
+    # 🔀 양쪽 모두 해당
+    if both_items:
+        html_parts.append(render_section_header(
+            f"🔀 양쪽 모두 해당", len(both_items), "#5a5a5a"))
+        for item, reason, days_left, _ in both_items:
+            html_parts.append(render_card(item, reason, days_left, idx))
             idx += 1
 
     html_parts.append("""
         <hr/>
         <p style='font-size:12px; color:#999;'>
-            매일 오전 9시(한국시간) 자동 발송 · 기업마당 공식 API · 경기/전국 필터링
+            매일 오전 9시(한국시간) 자동 발송 · 기업마당 공식 API · 정밀 매칭 v3
         </p>
         </body></html>
     """)
@@ -273,14 +359,14 @@ def send_email(urgent_items, normal_items):
     msg["Subject"] = subject
     msg["From"] = GMAIL_USER
     msg["To"] = TO_EMAIL
-    msg.set_content(f"신규 공고 {total_count}건 (마감임박 {len(urgent_items)}건). HTML 메일로 확인하세요.")
+    msg.set_content(f"신규 공고 {total}건. HTML 메일로 확인하세요.")
     msg.add_alternative("\n".join(html_parts), subtype="html")
 
     with smtplib.SMTP_SSL("smtp.gmail.com", 465) as smtp:
         smtp.login(GMAIL_USER, GMAIL_APP_PASSWORD)
         smtp.send_message(msg)
 
-    print(f"이메일 발송 완료: 마감임박 {len(urgent_items)}건 + 일반 {len(normal_items)}건")
+    print(f"이메일 발송 완료: 총 {total}건")
 
 
 def main():
@@ -302,13 +388,13 @@ def main():
     print(f"기업마당에서 가져온 공고 수: {len(items)}")
 
     if not items:
-        print("⚠️ 가져온 공고가 없습니다.")
         return
 
-    urgent_items = []   # 마감 3일 이내
-    normal_items = []   # 일반 신규
-    filtered_region = 0
-    filtered_expired = 0
+    urgent_items = []
+    yangjojang_items = []
+    kimdamhee_items = []
+    both_items = []
+    stats = {"region_filtered": 0, "expired": 0, "excluded": 0, "no_match": 0}
 
     for item in items:
         item_id = str(item.get("pblancId") or item.get("pblancNm", ""))
@@ -317,40 +403,51 @@ def main():
 
         # 지역 필터
         if not is_region_allowed(item):
-            filtered_region += 1
+            stats["region_filtered"] += 1
             seen.add(item_id)
             continue
 
-        # 키워드/기관 매칭
-        relevant, reason = is_relevant(item)
+        # 분류
+        relevant, reason, business = classify_business(item)
         if not relevant:
+            if reason.startswith("제외:"):
+                stats["excluded"] += 1
+            else:
+                stats["no_match"] += 1
             seen.add(item_id)
             continue
 
-        # 마감일 확인
+        # 마감일
         days_left = get_days_until_deadline(item)
-
-        # 이미 마감된 건 제외
         if days_left is not None and days_left < 0:
-            filtered_expired += 1
+            stats["expired"] += 1
             seen.add(item_id)
             continue
 
-        # 마감임박 vs 일반 분류
+        # 분류
+        entry = (item, reason, days_left, business)
         if days_left is not None and days_left <= DEADLINE_WARNING_DAYS:
-            urgent_items.append((item, reason, days_left))
+            urgent_items.append(entry)
+        elif business == "yangjojang":
+            yangjojang_items.append(entry)
+        elif business == "kimdamhee":
+            kimdamhee_items.append(entry)
         else:
-            normal_items.append((item, reason, days_left))
+            both_items.append(entry)
 
         seen.add(item_id)
 
-    print(f"지역 필터로 제외: {filtered_region}건")
-    print(f"이미 마감되어 제외: {filtered_expired}건")
-    print(f"마감임박 (D-3 이내): {len(urgent_items)}건")
-    print(f"일반 신규 공고: {len(normal_items)}건")
+    print(f"📍 지역 필터 제외: {stats['region_filtered']}건")
+    print(f"📅 이미 마감 제외: {stats['expired']}건")
+    print(f"🚫 제외 키워드 매칭: {stats['excluded']}건")
+    print(f"➖ 매칭 안 됨: {stats['no_match']}건")
+    print(f"⏰ 마감임박: {len(urgent_items)}건")
+    print(f"🍶 좋은술양조장: {len(yangjojang_items)}건")
+    print(f"🌾 김담희창업: {len(kimdamhee_items)}건")
+    print(f"🔀 양쪽 모두: {len(both_items)}건")
 
-    if urgent_items or normal_items:
-        send_email(urgent_items, normal_items)
+    if urgent_items or yangjojang_items or kimdamhee_items or both_items:
+        send_email(urgent_items, yangjojang_items, kimdamhee_items, both_items)
 
     save_seen(seen)
     print("완료!")
