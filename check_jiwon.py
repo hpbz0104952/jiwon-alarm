@@ -1,8 +1,8 @@
 """
-지원사업 알림 자동화 스크립트 v3 (정밀 조정판)
-- 좋은술양조장: 소상공인, 탁주/약주/증류주, 평택, 시설/수출/박람회/인증
-- 김담희창업: 예비창업, 청년농업인, 여성기업, 1인창조기업, 6차산업, 비건/K푸드
-- 경기/전국 대상만, 마감 3일 이내 별도 강조, 두 사업 섹션 구분 표시
+지원사업 알림 자동화 스크립트 v4 (금액 정보 추가)
+- 좋은술양조장 + 김담희창업 정밀 매칭
+- 경기/전국 대상만, 마감 3일 이내 별도 강조
+- 공고 본문에서 지원금액 자동 추출 표시
 """
 import os
 import json
@@ -19,14 +19,12 @@ from pathlib import Path
 
 TO_EMAIL = "jsul8929@gmail.com"
 
-# === 🔥 핵심 키워드 (1개라도 매칭되면 통과) ===
-# 두 사업과 직접 연관된 키워드
 CORE_KEYWORDS = {
-    "yangjojang": [  # 좋은술양조장 핵심
+    "yangjojang": [
         "양조장", "전통주", "막걸리", "탁주", "약주", "증류주",
         "주류", "주조", "지역특산주", "민속주",
     ],
-    "kimdamhee": [  # 김담희창업 핵심
+    "kimdamhee": [
         "예비창업", "청년창업", "청년농업", "청년농업인", "후계농", "영농창업",
         "여성기업", "여성창업", "1인창조기업", "1인기업",
         "6차산업", "농촌융복합", "농촌자원복합", "농촌체험",
@@ -35,8 +33,6 @@ CORE_KEYWORDS = {
     ],
 }
 
-# === ⚖️ 조합 키워드 (2개 이상 동시 매칭되어야 통과) ===
-# 단독으론 너무 광범위해서 노이즈 많음
 COMBO_KEYWORDS = [
     "디자인", "패키지", "브랜드", "브랜딩",
     "마케팅", "온라인", "오프라인", "유통", "판로",
@@ -52,7 +48,6 @@ COMBO_KEYWORDS = [
     "소상공인", "중소기업", "스타트업", "창업기업",
 ]
 
-# === 🏛️ 우선순위 기관 (기관명만으로도 통과) ===
 PRIORITY_ORGS = [
     "한국디자인진흥원",
     "한국쌀가공식품협회",
@@ -77,19 +72,17 @@ PRIORITY_ORGS = [
     "KOTRA", "코트라",
 ]
 
-# === 🚫 제외 키워드 (이게 들어가면 거의 무조건 무관) ===
 EXCLUDE_KEYWORDS = [
-    "대기업", "중견기업",  # 우리는 소상공인/예비창업
+    "대기업", "중견기업",
     "IT개발자", "소프트웨어개발자", "AI개발자", "프로그래머",
     "반도체", "디스플레이", "조선", "해운", "항공",
     "광역버스", "택시", "물류센터",
     "벤처투자조합", "사모펀드",
     "이공계특성화", "공학교육",
-    "장애인기업", "사회적기업",  # 해당 안 되면 제외 (해당되시면 빼주세요)
+    "장애인기업", "사회적기업",
     "보훈", "다문화",
 ]
 
-# === 지역 필터 ===
 ALLOWED_REGIONS = ["경기", "전국", "수도권", "평택"]
 EXCLUDED_REGIONS = [
     "서울", "부산", "대구", "인천", "광주", "대전", "울산", "세종",
@@ -124,7 +117,7 @@ def fetch_bizinfo():
     params = {
         "crtfcKey": BIZINFO_API_KEY,
         "dataType": "json",
-        "searchCnt": "200",  # 더 많이 가져와서 정밀 필터링
+        "searchCnt": "200",
         "hashtags": "",
     }
     try:
@@ -155,7 +148,7 @@ def is_region_allowed(item):
         if region in region_text:
             return False
 
-    return True  # 지역 정보 없으면 전국으로 간주
+    return True
 
 
 def parse_deadline(reqstBeginEndDe):
@@ -185,8 +178,41 @@ def get_days_until_deadline(item):
     return (deadline - today).days
 
 
+def extract_amounts(item):
+    """공고 본문에서 금액 정보를 추출"""
+    title = item.get("pblancNm", "") or ""
+    content = item.get("bsnsSumryCn", "") or ""
+    text = f"{title}\n{content}"
+
+    # 금액 패턴들 (한국어 금액 표현)
+    patterns = [
+        # "최대 1,000만원", "최대 5억원", "최대 500만원 이내"
+        r"(최대|최고)\s*([\d,]+(?:\.\d+)?)\s*(억\s*\d*\s*천?만?|천만|백만|만)\s*원?",
+        # "1,000만원 이내", "5억원 한도"
+        r"([\d,]+(?:\.\d+)?)\s*(억\s*\d*\s*천?만?|천만|백만|만)\s*원\s*(이내|한도|이하|까지)",
+        # "기업당 500만원", "건당 1,000만원", "사업당 3억원"
+        r"(기업당|건당|사업당|업체당|개사당|과제당)\s*([\d,]+(?:\.\d+)?)\s*(억\s*\d*\s*천?만?|천만|백만|만)\s*원?",
+        # "총 사업비 10억원", "예산 50억원", "사업규모 5억원"
+        r"(총\s*사업비|예산|사업규모|총\s*예산|지원금|지원\s*규모|총\s*규모)\s*[:：]?\s*([\d,]+(?:\.\d+)?)\s*(억\s*\d*\s*천?만?|천만|백만|만)\s*원?",
+        # "지원금액 1,000만원"
+        r"(지원금액|지원\s*금액|보조금|장려금)\s*[:：]?\s*([\d,]+(?:\.\d+)?)\s*(억\s*\d*\s*천?만?|천만|백만|만)\s*원?",
+    ]
+
+    found = []
+    for pattern in patterns:
+        for match in re.finditer(pattern, text):
+            full_match = match.group(0).strip()
+            # 너무 긴 매칭은 줄임
+            if len(full_match) > 30:
+                full_match = full_match[:30] + "..."
+            if full_match not in found:
+                found.append(full_match)
+
+    # 중복 제거 + 최대 3개만
+    return found[:3]
+
+
 def has_excluded(text):
-    """제외 키워드가 있으면 True"""
     for kw in EXCLUDE_KEYWORDS:
         if kw in text:
             return True, kw
@@ -194,25 +220,17 @@ def has_excluded(text):
 
 
 def classify_business(item):
-    """
-    공고가 어느 사업과 관련 있는지 분류
-    Returns: (relevant: bool, reason: str, business: str)
-    business: "yangjojang" / "kimdamhee" / "both" / ""
-    """
     title = (item.get("pblancNm") or "").strip()
     content = (item.get("bsnsSumryCn") or "").strip()
     org = (item.get("excInsttNm") or item.get("jrsdInsttNm") or "").strip()
     text = f"{title} {content} {org}"
 
-    # 제외 키워드 먼저 체크
     excluded, exc_kw = has_excluded(text)
     if excluded:
         return False, f"제외:{exc_kw}", ""
 
-    # 우선순위 기관이면 통과
     for priority_org in PRIORITY_ORGS:
         if priority_org in org:
-            # 기관에 따라 어느 사업으로 분류할지 추정
             if any(k in priority_org for k in ["여성", "창업", "기업가정신"]):
                 return True, f"기관: {priority_org}", "kimdamhee"
             elif any(k in priority_org for k in ["농", "쌀", "전통주", "디자인", "수출", "KOTRA", "코트라"]):
@@ -220,7 +238,6 @@ def classify_business(item):
             else:
                 return True, f"기관: {priority_org}", "both"
 
-    # 핵심 키워드 매칭
     yangjojang_matched = [kw for kw in CORE_KEYWORDS["yangjojang"] if kw in text]
     kimdamhee_matched = [kw for kw in CORE_KEYWORDS["kimdamhee"] if kw in text]
 
@@ -231,7 +248,6 @@ def classify_business(item):
     elif kimdamhee_matched:
         return True, f"창업 핵심: {', '.join(kimdamhee_matched[:2])}", "kimdamhee"
 
-    # 조합 키워드 (2개 이상 매칭되어야 통과)
     combo_matched = [kw for kw in COMBO_KEYWORDS if kw in text]
     if len(combo_matched) >= 2:
         return True, f"조합: {', '.join(combo_matched[:3])}", "both"
@@ -251,6 +267,7 @@ def render_card(item, reason, days_left, idx, urgent=False):
     if len(summary) > 200:
         summary = summary[:200] + "..."
 
+    # 마감일
     if days_left is None:
         deadline_html = f"<b>접수기간:</b> {reqstBeginEndDe}"
     elif days_left < 0:
@@ -259,6 +276,18 @@ def render_card(item, reason, days_left, idx, urgent=False):
         deadline_html = f"<b>접수기간:</b> {reqstBeginEndDe} <span style='color:#d9534f; font-weight:bold;'>⏰ D-{days_left}</span>"
     else:
         deadline_html = f"<b>접수기간:</b> {reqstBeginEndDe} <span style='color:#5cb85c;'>(D-{days_left})</span>"
+
+    # 💰 금액 정보 (NEW!)
+    amounts = extract_amounts(item)
+    if amounts:
+        amount_text = " · ".join(amounts)
+        amount_html = f"""
+        <div style='background:#fff8e1; border-left:3px solid #ffa726; padding:6px 10px; margin:8px 0; font-size:13px;'>
+            💰 <b>지원금액:</b> {amount_text}
+        </div>
+        """
+    else:
+        amount_html = ""
 
     if urgent:
         border_color = "#d9534f"
@@ -277,6 +306,7 @@ def render_card(item, reason, days_left, idx, urgent=False):
             <b>기관:</b> {org}<br/>
             {deadline_html}
         </div>
+        {amount_html}
         <div style='font-size:13px; color:#444; margin-top:8px; line-height:1.5;'>{summary}</div>
         <div style='margin-top:10px;'>
             <a href='{pblancUrl}' style='background:#2c5aa0; color:white; padding:6px 14px;
@@ -310,12 +340,11 @@ def send_email(urgent_items, yangjojang_items, kimdamhee_items, both_items):
     html_parts = [
         "<html><body style='font-family: 맑은 고딕, Arial, sans-serif; max-width: 700px;'>",
         f"<h2 style='color:#2c5aa0;'>📢 오늘의 지원사업 공고 ({total}건)</h2>",
-        f"<p style='color:#666;'>경기/전국 대상 · 좋은술양조장 + 김담희창업 맞춤 매칭</p>",
+        f"<p style='color:#666;'>경기/전국 대상 · 좋은술양조장 + 김담희창업 맞춤 매칭 · 💰 지원금액 자동 추출</p>",
     ]
 
     idx = 1
 
-    # ⏰ 마감 임박 (최우선)
     if urgent_items:
         html_parts.append(render_section_header(
             f"⏰ 마감 임박! 3일 이내", len(urgent_items), "#d9534f"))
@@ -323,7 +352,6 @@ def send_email(urgent_items, yangjojang_items, kimdamhee_items, both_items):
             html_parts.append(render_card(item, reason, days_left, idx, urgent=True))
             idx += 1
 
-    # 🍶 좋은술양조장 관련
     if yangjojang_items:
         html_parts.append(render_section_header(
             f"🍶 좋은술양조장 관련", len(yangjojang_items), "#7a3d2e"))
@@ -331,7 +359,6 @@ def send_email(urgent_items, yangjojang_items, kimdamhee_items, both_items):
             html_parts.append(render_card(item, reason, days_left, idx))
             idx += 1
 
-    # 🌾 김담희창업 관련
     if kimdamhee_items:
         html_parts.append(render_section_header(
             f"🌾 김담희창업 관련 (예비창업/청년농업)", len(kimdamhee_items), "#5cb85c"))
@@ -339,7 +366,6 @@ def send_email(urgent_items, yangjojang_items, kimdamhee_items, both_items):
             html_parts.append(render_card(item, reason, days_left, idx))
             idx += 1
 
-    # 🔀 양쪽 모두 해당
     if both_items:
         html_parts.append(render_section_header(
             f"🔀 양쪽 모두 해당", len(both_items), "#5a5a5a"))
@@ -350,7 +376,7 @@ def send_email(urgent_items, yangjojang_items, kimdamhee_items, both_items):
     html_parts.append("""
         <hr/>
         <p style='font-size:12px; color:#999;'>
-            매일 오전 9시(한국시간) 자동 발송 · 기업마당 공식 API · 정밀 매칭 v3
+            매일 오전 9시(한국시간) 자동 발송 · 기업마당 공식 API · v4 (금액 자동 추출)
         </p>
         </body></html>
     """)
@@ -401,13 +427,11 @@ def main():
         if not item_id or item_id in seen:
             continue
 
-        # 지역 필터
         if not is_region_allowed(item):
             stats["region_filtered"] += 1
             seen.add(item_id)
             continue
 
-        # 분류
         relevant, reason, business = classify_business(item)
         if not relevant:
             if reason.startswith("제외:"):
@@ -417,14 +441,12 @@ def main():
             seen.add(item_id)
             continue
 
-        # 마감일
         days_left = get_days_until_deadline(item)
         if days_left is not None and days_left < 0:
             stats["expired"] += 1
             seen.add(item_id)
             continue
 
-        # 분류
         entry = (item, reason, days_left, business)
         if days_left is not None and days_left <= DEADLINE_WARNING_DAYS:
             urgent_items.append(entry)
